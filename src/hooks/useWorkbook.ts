@@ -33,10 +33,19 @@ export function useWorkbook() {
     [workbookId, updateSnapshotMutation]
   );
 
+  const loadSnapshot = useCallback(
+    async (snapshot: string) => {
+      if (!workbookId) return;
+      await updateSnapshotMutation({ id: workbookId, snapshot });
+    },
+    [workbookId, updateSnapshotMutation]
+  );
+
   return {
     workbookId,
     workbook,
     initialize,
     saveSnapshot,
+    loadSnapshot,
   };
 }

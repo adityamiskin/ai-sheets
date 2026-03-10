@@ -1,25 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-
-// Default empty workbook snapshot for Univer
-const DEFAULT_SNAPSHOT = JSON.stringify({
-  id: "workbook-1",
-  locale: "enUS",
-  name: "Book1",
-  sheetOrder: ["sheet-1"],
-  sheets: {
-    "sheet-1": {
-      id: "sheet-1",
-      name: "Sheet1",
-      rowCount: 100,
-      columnCount: 26,
-      cellData: {},
-      defaultColumnWidth: 88,
-      defaultRowHeight: 24,
-      showGridlines: 1,
-    },
-  },
-});
+import { DEFAULT_SNAPSHOT, DEFAULT_WORKBOOK_NAME } from "./defaultWorkbook";
 
 export const create = mutation({
   args: {
@@ -28,7 +9,7 @@ export const create = mutation({
   handler: async (ctx, args) => {
     const now = Date.now();
     const workbookId = await ctx.db.insert("workbooks", {
-      name: args.name ?? "Book1.xlsx",
+      name: args.name ?? DEFAULT_WORKBOOK_NAME,
       snapshot: DEFAULT_SNAPSHOT,
       createdAt: now,
       updatedAt: now,
@@ -53,7 +34,7 @@ export const getOrCreate = mutation({
 
     const now = Date.now();
     const id = await ctx.db.insert("workbooks", {
-      name: "Book1.xlsx",
+      name: DEFAULT_WORKBOOK_NAME,
       snapshot: DEFAULT_SNAPSHOT,
       createdAt: now,
       updatedAt: now,

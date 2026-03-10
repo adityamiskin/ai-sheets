@@ -49,7 +49,9 @@ export default defineSchema({
     workbookId: v.id("workbooks"),
     threadId: v.string(),
     title: v.optional(v.string()),
+    snapshot: v.optional(v.string()),
     createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
   })
     .index("by_workbook", ["workbookId"])
     .index("by_thread", ["threadId"]),

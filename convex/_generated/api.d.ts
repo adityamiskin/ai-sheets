@@ -11,8 +11,10 @@
 import type * as _agent from "../_agent.js";
 import type * as chat from "../chat.js";
 import type * as chatActions from "../chatActions.js";
+import type * as defaultWorkbook from "../defaultWorkbook.js";
 import type * as operations from "../operations.js";
 import type * as tasks from "../tasks.js";
+import type * as threadManagement from "../threadManagement.js";
 import type * as workbooks from "../workbooks.js";
 
 import type {
@@ -25,8 +27,10 @@ declare const fullApi: ApiFromModules<{
   _agent: typeof _agent;
   chat: typeof chat;
   chatActions: typeof chatActions;
+  defaultWorkbook: typeof defaultWorkbook;
   operations: typeof operations;
   tasks: typeof tasks;
+  threadManagement: typeof threadManagement;
   workbooks: typeof workbooks;
 }>;
 
