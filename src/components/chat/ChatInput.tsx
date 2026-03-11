@@ -35,7 +35,7 @@ export function ChatInput({
       >
         <PromptInputBody>
           <PromptInputTextarea
-            className="min-h-[42px] max-h-[200px] text-[13px] leading-6"
+            className="min-h-[42px] max-h-[200px] text-sm leading-6"
             disabled={disabled}
             placeholder={placeholder}
           />

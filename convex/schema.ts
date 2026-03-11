@@ -72,4 +72,19 @@ export default defineSchema({
     ),
     createdAt: v.number(),
   }).index("by_workbook", ["workbookId"]),
+
+  dataSources: defineTable({
+    workbookId: v.id("workbooks"),
+    name: v.string(),
+    dialect: v.union(
+      v.literal("postgres"),
+      v.literal("mysql"),
+      v.literal("sqlserver")
+    ),
+    connectionString: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_workbook", ["workbookId"])
+    .index("by_workbook_name", ["workbookId", "name"]),
 });

@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Manrope:wght@400;500;600;700;800&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap");
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
@@ -8,6 +8,7 @@
 
 * {
   box-sizing: border-box;
+  line-height: 20px !important;
 }
 
 body {
@@ -58,7 +59,7 @@ body {
   --sidebar-border: #ede7dc;
   --sidebar-ring: #c4b5a0;
   --font-display: "Instrument Serif", "Georgia", serif;
-  --font-body: "Manrope", "Geist Variable", sans-serif;
+  --font-body: "Geist Variable", "Inter", sans-serif;
   --pearl: #fefdfb;
   --bone: #faf7f2;
   --parchment: #f5f0e8;
@@ -295,9 +296,11 @@ body {
 }
 
 .ramp-chat-pane {
+  min-width: 0;
   min-height: 0;
   display: flex;
   width: 100%;
+  overflow: hidden;
   border-left: 1px solid #e8e2d8;
   background: #fbfaf8;
 }
@@ -569,15 +572,21 @@ body {
 }
 
 .spread-designer-host .gc-designer-ribbon-tabs-content {
-  border-radius: 0;
-  box-shadow: none;
-  border-top: 1px solid #ece7e0;
-  border-bottom: 1px solid #ece7e0;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid #e4ded3;
+  box-shadow: 0 1px 0 rgba(73, 62, 47, 0.04);
+  overflow: visible;
+}
+
+.spread-designer-host .gc-designer-ribbon-tabs-content,
+.spread-designer-host .gc-designer-ribbon-tabs-content * {
+  line-height: normal !important;
 }
 
 .spread-designer-host .gc-designer-ribbon-tab-top-container {
   height: 34px;
-  background: #fbfaf8;
+  background: transparent;
   border-bottom: 1px solid #ece7e0;
 }
 
@@ -597,6 +606,41 @@ body {
 .spread-designer-host .gc-designer-statusbar,
 .spread-designer-host .gc-designer-formula-bar {
   background: #fbfaf8;
+}
+
+.spread-designer-host .gc-designer-statusbar {
+  background: #1f7244 !important;
+  color: #ffffff !important;
+  border-top: 1px solid #1a5f39;
+}
+
+.spread-designer-host .gc-designer-statusbar * {
+  color: #ffffff !important;
+  opacity: 1 !important;
+  fill: #ffffff !important;
+}
+
+.spread-designer-host .gc-statusbar {
+  background: #1f7244 !important;
+  color: #ffffff !important;
+}
+
+.spread-designer-host .gc-statusbar,
+.spread-designer-host .gc-statusbar * {
+  color: #ffffff !important;
+  opacity: 1 !important;
+}
+
+.spread-designer-host .gc-statusbar-progress-item-wrapper {
+  background-color: #1f7244 !important;
+  border-color: #ffffff !important;
+}
+
+.spread-designer-host .gc-statusbar-progress-item-bar,
+.spread-designer-host .gc-statusbar-slider-back-progress,
+.spread-designer-host .gc-statusbar-slider-middle-line,
+.spread-designer-host .gc-statusbar-slider-drag-bar {
+  background: #ffffff !important;
 }
 
 .spread-designer-host .gc-spread-host,

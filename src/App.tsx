@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as GC from "@mescius/spread-sheets";
 import { useMutation, useQuery } from "convex/react";
+import { useNavigate, useParams } from "@tanstack/react-router";
 import { api } from "../convex/_generated/api";
 import {
   SpreadsheetEditor,
@@ -8,6 +9,7 @@ import {
 } from "./components/spreadsheet/SpreadsheetEditor";
 import { ChatPanel } from "./components/chat/ChatPanel";
 import { ThreadHistorySheet } from "./components/chat/ThreadHistorySheet";
+import { DataSourcesSheet } from "./components/chat/DataSourcesSheet";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -17,9 +19,14 @@ import { Button } from "./components/ui/button";
 import { useWorkbook } from "./hooks/useWorkbook";
 import { useChat } from "./hooks/useChat";
 import { useOperationProcessor } from "./hooks/useOperationProcessor";
-import { Download, Menu } from "lucide-react";
+import { Database, Download, Menu } from "lucide-react";
+
 export default function App() {
-  const { workbookId, workbook, initialize, saveSnapshot, loadSnapshot } = useWorkbook();
+  const navigate = useNavigate();
+  const params = useParams({ strict: false });
+  const routeThreadId =
+    typeof params.threadId === "string" ? params.threadId : null;
+  const { workbookId, workbook, initialize, saveSnapshot } = useWorkbook();
   const {
     threadId,
     isSending,
@@ -27,7 +34,7 @@ export default function App() {
     setActiveThreadId,
     createNewThread,
     deleteThread,
-  } = useChat(workbookId);
+  } = useChat(workbookId, routeThreadId);
   const activeThread = useQuery(
     api.chat.getThreadState,
     threadId ? { threadId } : "skip"
@@ -35,8 +42,9 @@ export default function App() {
   const updateThreadSnapshot = useMutation(api.chat.updateThreadSnapshot);
   const [spread, setSpread] = useState<SpreadsheetApi | null>(null);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isDataSourcesOpen, setIsDataSourcesOpen] = useState(false);
   const initializedRef = useRef(false);
-  const pendingThreadHydrationRef = useRef<string | null>(null);
+  const saveChainRef = useRef(Promise.resolve());
 
   // Initialize workbook on mount
   useEffect(() => {
@@ -46,29 +54,39 @@ export default function App() {
   }, [initialize]);
 
   useEffect(() => {
-    pendingThreadHydrationRef.current = threadId;
-  }, [threadId]);
+    if (!threadId) return;
+    if (routeThreadId === threadId) return;
 
-  useEffect(() => {
-    if (!threadId || !activeThread) return;
-    if (pendingThreadHydrationRef.current !== threadId) return;
-
-    pendingThreadHydrationRef.current = null;
-    void loadSnapshot(activeThread.snapshot);
-  }, [activeThread, loadSnapshot, threadId]);
+    void navigate({
+      to: "/$threadId",
+      params: { threadId },
+      replace: routeThreadId === null,
+    });
+  }, [navigate, routeThreadId, threadId]);
 
   const isWorkbookLoading = workbookId === null || workbook === undefined;
+  const isThreadSnapshotLoading = threadId !== null && activeThread === undefined;
+  const currentSnapshot =
+    threadId && activeThread ? activeThread.snapshot : workbook?.snapshot;
+  const currentSnapshotVersion =
+    threadId && activeThread ? activeThread.updatedAt : workbook?.updatedAt;
 
   const handleApiReady = useCallback((api: SpreadsheetApi) => {
     setSpread(api);
   }, []);
 
   const handleSnapshotChange = useCallback(
-    async (snapshot: string) => {
-      await saveSnapshot(snapshot);
-      if (threadId) {
-        await updateThreadSnapshot({ threadId, snapshot });
-      }
+    (snapshot: string) => {
+      saveChainRef.current = saveChainRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          await saveSnapshot(snapshot);
+          if (threadId) {
+            await updateThreadSnapshot({ threadId, snapshot });
+          }
+        });
+
+      return saveChainRef.current;
     },
     [saveSnapshot, threadId, updateThreadSnapshot]
   );
@@ -106,7 +124,49 @@ export default function App() {
     );
   }, [spread, workbook?.name]);
 
-  useOperationProcessor(workbookId, spread, handleSnapshotChange);
+  useOperationProcessor(workbookId, spread);
+
+  const handleSelectThread = useCallback(
+    (nextThreadId: string) => {
+      setActiveThreadId(nextThreadId);
+      void navigate({
+        to: "/$threadId",
+        params: { threadId: nextThreadId },
+      });
+    },
+    [navigate, setActiveThreadId]
+  );
+
+  const handleCreateThread = useCallback(async () => {
+    const nextThreadId = await createNewThread();
+    if (nextThreadId) {
+      void navigate({
+        to: "/$threadId",
+        params: { threadId: nextThreadId },
+      });
+    }
+    return nextThreadId;
+  }, [createNewThread, navigate]);
+
+  const handleDeleteThread = useCallback(
+    async (targetThreadId: string) => {
+      const nextThreadId = await deleteThread(targetThreadId);
+      if (nextThreadId) {
+        void navigate({
+          to: "/$threadId",
+          params: { threadId: nextThreadId },
+          replace: true,
+        });
+      } else {
+        void navigate({
+          to: "/",
+          replace: true,
+        });
+      }
+      return nextThreadId;
+    },
+    [deleteThread, navigate]
+  );
 
   return (
     <div className="ramp-app-shell">
@@ -130,6 +190,16 @@ export default function App() {
             type="button"
             variant="ghost"
             size="sm"
+            disabled={!workbookId}
+            onClick={() => setIsDataSourcesOpen(true)}
+          >
+            <Database className="h-3.5 w-3.5" />
+            Sources
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
             disabled={!spread || isWorkbookLoading}
             onClick={handleDownload}
           >
@@ -146,9 +216,15 @@ export default function App() {
           activeThreadId={threadId}
           open={isHistoryOpen}
           onOpenChange={setIsHistoryOpen}
-          onSelectThread={setActiveThreadId}
-          onCreateThread={createNewThread}
-          onDeleteThread={deleteThread}
+          onSelectThread={handleSelectThread}
+          onCreateThread={handleCreateThread}
+          onDeleteThread={handleDeleteThread}
+        />
+
+        <DataSourcesSheet
+          workbookId={workbookId}
+          open={isDataSourcesOpen}
+          onOpenChange={setIsDataSourcesOpen}
         />
 
         <ResizablePanelGroup
@@ -165,10 +241,15 @@ export default function App() {
                 <div className="ramp-loading-state">
                   Loading workbook...
                 </div>
+              ) : isThreadSnapshotLoading ? (
+                <div className="ramp-loading-state">
+                  Loading thread snapshot...
+                </div>
               ) : (
                 <SpreadsheetEditor
                   key={workbookId ?? "loading"}
-                  snapshot={workbook?.snapshot}
+                  snapshot={currentSnapshot}
+                  snapshotVersion={currentSnapshotVersion}
                   onSnapshotChange={handleSnapshotChange}
                   onApiReady={handleApiReady}
                 />
@@ -185,7 +266,7 @@ export default function App() {
             defaultSize="28%"
             minSize="24%"
             maxSize="45%"
-            className="ramp-chat-pane"
+            className="ramp-chat-pane text-sm"
           >
             <ChatPanel
               workbookId={workbookId}

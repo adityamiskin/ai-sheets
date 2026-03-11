@@ -1,0 +1,1 @@
+use bun and bunx instead of npm or pnpm.

@@ -14,8 +14,7 @@ const MIN_SHEET_ROW_COUNT = 1000;
 
 export function useOperationProcessor(
   workbookId: Id<"workbooks"> | null,
-  spread: SpreadsheetApi | null,
-  persistSnapshot?: (snapshot: string) => Promise<void> | void
+  spread: SpreadsheetApi | null
 ) {
   const pendingOps = useQuery(
     api.operations.getPending,
@@ -24,15 +23,6 @@ export function useOperationProcessor(
   const markApplied = useMutation(api.operations.markApplied);
   const markFailed = useMutation(api.operations.markFailed);
   const processingRef = useRef(new Set<string>());
-  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const scheduleSnapshotPersist = () => {
-    if (!spread || !persistSnapshot) return;
-    if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
-    persistTimerRef.current = setTimeout(() => {
-      void persistSnapshot(JSON.stringify(spread.toJSON()));
-    }, 500);
-  };
 
   useEffect(() => {
     if (!pendingOps || !spread || pendingOps.length === 0) return;
@@ -46,7 +36,6 @@ export function useOperationProcessor(
         try {
           const params = JSON.parse(op.params);
           applyOperation(spread, op.type, params);
-          scheduleSnapshotPersist();
           await markApplied({ id: op._id });
         } catch (e) {
           const errMsg = e instanceof Error ? e.message : "Unknown error";
@@ -57,13 +46,7 @@ export function useOperationProcessor(
         }
       })();
     }
-  }, [pendingOps, spread, persistSnapshot, markApplied, markFailed]);
-
-  useEffect(() => {
-    return () => {
-      if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
-    };
-  }, []);
+  }, [pendingOps, spread, markApplied, markFailed]);
 }
 
 /**
@@ -87,6 +70,60 @@ function applyOperation(
         r.map((v) => (v === null || v === undefined ? "" : v))
       );
       sheet.setArray(row, col, cleanData);
+      break;
+    }
+
+    case "write_query_results": {
+      const { sheet_name, start_cell, columns, rows } = params as {
+        sheet_name: string;
+        start_cell: string;
+        columns: string[];
+        rows: Record<string, string | number | boolean | null>[];
+      };
+      if (!sheet_name) {
+        throw new Error("write_query_results requires sheet_name");
+      }
+      if (!start_cell) {
+        throw new Error("write_query_results requires start_cell");
+      }
+
+      const sheet = ensureSheet(spread, sheet_name);
+      const { row, col } = parseCellRef(start_cell);
+      const tableData = [
+        columns,
+        ...rows.map((item) =>
+          columns.map((column) => {
+            const value = item[column];
+            return value === null || value === undefined ? "" : value;
+          })
+        ),
+      ];
+
+      sheet.setArray(row, col, tableData);
+
+      const headerRange = sheet.getRange(row, col, 1, columns.length);
+      const headerStyle = new GC.Spread.Sheets.Style();
+      headerStyle.fontWeight = "700";
+      headerStyle.backColor = "#d3d3d3";
+      headerStyle.hAlign = GC.Spread.Sheets.HorizontalAlign.center;
+      headerRange.setStyle(headerStyle);
+
+      for (let columnIndex = 0; columnIndex < columns.length; columnIndex += 1) {
+        sheet.autoFitColumn(col + columnIndex);
+      }
+
+      if (rows.length > 0) {
+        const tableName = `QueryTable_${Date.now()}`;
+        sheet.tables.add(
+          tableName,
+          row,
+          col,
+          rows.length + 1,
+          columns.length,
+          GC.Spread.Sheets.Tables.TableThemes.medium2
+        );
+      }
+
       break;
     }
 
@@ -185,6 +222,9 @@ function applyOperation(
 
     case "create_worksheet": {
       const { sheet_name } = params as { sheet_name: string };
+      if (!sheet_name) {
+        throw new Error("create_worksheet requires sheet_name");
+      }
       const firstSheet = spread.getSheet(0);
       if (
         spread.getSheetCount() === 1 &&
@@ -207,6 +247,9 @@ function applyOperation(
 
     case "delete_worksheet": {
       const { sheet_name } = params as { sheet_name: string };
+      if (!sheet_name) {
+        throw new Error("delete_worksheet requires sheet_name");
+      }
       const sheetIndex = getSheetIndexByName(spread, sheet_name);
       if (sheetIndex >= 0 && spread.getSheetCount() > 1) {
         spread.removeSheet(sheetIndex);
@@ -219,6 +262,9 @@ function applyOperation(
         old_name: string;
         new_name: string;
       };
+      if (!old_name || !new_name) {
+        throw new Error("rename_worksheet requires old_name and new_name");
+      }
       const sheet = getSheetByName(spread, old_name);
       if (sheet) sheet.name(new_name);
       break;
@@ -260,11 +306,10 @@ function applyOperation(
     }
 
     case "sort_range": {
-      const { cell_range, sort_by_column, ascending, has_header } = params as {
+      const { cell_range, sort_by_column, ascending } = params as {
         cell_range: { sheet: string; range: string };
         sort_by_column: string;
         ascending?: boolean;
-        has_header?: boolean;
       };
       const sheet = getSheetByName(spread, cell_range.sheet);
       if (!sheet) throw new Error(`Sheet '${cell_range.sheet}' not found`);
@@ -296,6 +341,9 @@ function applyOperation(
       break;
 
     case "format_worksheet":
+      if (!(params as { sheet_name?: string }).sheet_name) {
+        throw new Error("format_worksheet requires sheet_name");
+      }
       applyWorksheetFormatting(spread, params);
       break;
 
@@ -404,6 +452,30 @@ function getSheetByName(spread: SpreadsheetApi, name: string) {
     if (sheet?.name() === name) return sheet;
   }
   return null;
+}
+
+function ensureSheet(spread: SpreadsheetApi, name: string) {
+  const existing = getSheetByName(spread, name);
+  if (existing) {
+    return existing;
+  }
+
+  const firstSheet = spread.getSheet(0);
+  if (
+    spread.getSheetCount() === 1 &&
+    firstSheet &&
+    firstSheet.name() === "Sheet1" &&
+    isSheetBlank(firstSheet)
+  ) {
+    firstSheet.name(name);
+    normalizeSheet(firstSheet);
+    return firstSheet;
+  }
+
+  const sheet = new GC.Spread.Sheets.Worksheet(name);
+  normalizeSheet(sheet);
+  spread.addSheet(spread.getSheetCount(), sheet);
+  return sheet;
 }
 
 function isSheetBlank(sheet: GC.Spread.Sheets.Worksheet) {

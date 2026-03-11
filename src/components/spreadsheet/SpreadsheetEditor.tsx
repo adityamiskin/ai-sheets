@@ -46,7 +46,8 @@ interface DesignerStatic {
 
 interface SpreadsheetEditorProps {
   snapshot?: string;
-  onSnapshotChange?: (snapshot: string) => void;
+  snapshotVersion?: number;
+  onSnapshotChange?: (snapshot: string) => Promise<void> | void;
   onApiReady?: (api: SpreadsheetApi) => void;
 }
 
@@ -146,8 +147,21 @@ function createDesignerConfig(): DesignerConfig {
   };
 }
 
+function removeFirstSnapshot(
+  snapshots: string[],
+  target: string,
+) {
+  const index = snapshots.indexOf(target);
+  if (index < 0) {
+    return snapshots;
+  }
+
+  return [...snapshots.slice(0, index), ...snapshots.slice(index + 1)];
+}
+
 export function SpreadsheetEditor({
   snapshot,
+  snapshotVersion,
   onSnapshotChange,
   onApiReady,
 }: SpreadsheetEditorProps) {
@@ -159,26 +173,56 @@ export function SpreadsheetEditor({
   const initializedRef = useRef(false);
   const hydratingRef = useRef(false);
   const lastAppliedSnapshotRef = useRef<string | null>(null);
+  const pendingSnapshotsRef = useRef<string[]>([]);
+  const lastLocalSaveRequestedAtRef = useRef(0);
 
   const flushSnapshot = useCallback(() => {
     if (!onSnapshotChange || !spreadRef.current || hydratingRef.current) return;
     const nextSnapshot = JSON.stringify(spreadRef.current.toJSON());
+    lastLocalSaveRequestedAtRef.current = Date.now();
     lastAppliedSnapshotRef.current = nextSnapshot;
-    onSnapshotChange(nextSnapshot);
+    pendingSnapshotsRef.current = [...pendingSnapshotsRef.current, nextSnapshot];
+    Promise.resolve(onSnapshotChange(nextSnapshot))
+      .catch((error) => {
+        console.warn("Failed to persist workbook snapshot", error);
+      })
+      .finally(() => {
+        pendingSnapshotsRef.current = removeFirstSnapshot(
+          pendingSnapshotsRef.current,
+          nextSnapshot,
+        );
+      });
   }, [onSnapshotChange]);
 
-  const applySnapshot = useCallback(async (nextSnapshot?: string) => {
+  const applySnapshot = useCallback(async (nextSnapshot?: string, nextSnapshotVersion?: number) => {
     const spread = spreadRef.current;
     const designer = designerRef.current;
     if (!spread || !designer) return;
 
     const serialized = nextSnapshot ?? null;
+    const latestPendingSnapshot =
+      pendingSnapshotsRef.current[pendingSnapshotsRef.current.length - 1] ?? null;
+
+    if (
+      latestPendingSnapshot &&
+      serialized !== latestPendingSnapshot
+    ) {
+      return;
+    }
+
+    if (
+      typeof nextSnapshotVersion === "number" &&
+      nextSnapshotVersion < lastLocalSaveRequestedAtRef.current
+    ) {
+      return;
+    }
+
     if (serialized === lastAppliedSnapshotRef.current) return;
 
     hydratingRef.current = true;
     const parsedSnapshot = parseSnapshot(nextSnapshot);
     const shouldPersistBlankWorkbook =
-      parsedSnapshot === null || isLegacyUniverSnapshot(parsedSnapshot);
+      parsedSnapshot !== null && isLegacyUniverSnapshot(parsedSnapshot);
 
     try {
       if (parsedSnapshot && isSpreadSnapshot(parsedSnapshot)) {
@@ -255,7 +299,7 @@ export function SpreadsheetEditor({
     const resizeObserver = new ResizeObserver(handleContainerResize);
     resizeObserver.observe(containerRef.current);
 
-    void applySnapshot(snapshot).then(() => {
+    void applySnapshot(snapshot, snapshotVersion).then(() => {
       onApiReady?.(spread);
       handleContainerResize();
     });
@@ -280,12 +324,15 @@ export function SpreadsheetEditor({
       spreadRef.current = null;
       initializedRef.current = false;
     };
-  }, [applySnapshot, onApiReady, scheduleSave, snapshot]);
+    // Intentionally initialize the designer once. Snapshot updates are handled
+    // by the dedicated applySnapshot effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!initializedRef.current || !spreadRef.current) return;
-    void applySnapshot(snapshot);
-  }, [applySnapshot, snapshot]);
+    void applySnapshot(snapshot, snapshotVersion);
+  }, [applySnapshot, snapshot, snapshotVersion]);
 
   return <div ref={containerRef} className="spread-designer-host" />;
 }

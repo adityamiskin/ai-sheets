@@ -2,10 +2,17 @@
 
 import { Agent, createTool, type ToolCtx } from "@convex-dev/agent";
 import { createOpenAI } from "@ai-sdk/openai";
-import { api, components } from "./_generated/api";
+import { api, components, internal } from "./_generated/api";
 import type { DataModel } from "./_generated/dataModel";
 import { z } from "zod";
 import type { Id } from "./_generated/dataModel";
+import {
+  assertReadOnlySql,
+  discoverDatabaseObjects,
+  inspectRelations,
+  runSqlQuery,
+} from "./sqlData";
+import { type SupportedSqlDialect } from "./sqlDataShared";
 
 // --- Custom tool context: workbookId is spread onto ctx from the action ---
 
@@ -45,7 +52,7 @@ const TODAY = new Date().toLocaleDateString("en-US", {
 // --- System prompt ---
 
 const SYSTEM_PROMPT = `================================================================================
-                            RAMP SHEETS SYSTEM PROMPT
+                            ZAPSIGHT SHEETS SYSTEM PROMPT
 ================================================================================
 
 OVERVIEW:
@@ -57,18 +64,19 @@ their spreadsheet by using tools provided to you.
 INSTRUCTIONS
 ================================================================================
 
-1. When possible use the write_data_to_excel tool to set multiple cells at once to 
-   save time. For example, if you wish to populate a column with a list of 
-   values or changing formulas, use the write_data_to_excel tool.
+PRIMARY TOOL POLICY:
 
-2. There is no need to repeat the spreadsheet state in the chat, as the user 
+Use the direct spreadsheet, task, and SQL tools. Do not write TypeScript
+scripts or invent new tool APIs. Call the concrete tools that exist.
+
+1. There is no need to repeat the spreadsheet state in the chat, as the user 
    can always access the spreadsheet.
 
-3. When generating text / markdown output, ONLY generate h5 tags at the highest 
+2. When generating text / markdown output, ONLY generate h5 tags at the highest 
    level (e.g. h6 is OK) (e.g. #####) -- no h1, h2, h3, h4 as these are too 
    big for the screen.
 
-4. If you need real-time data, you have three options:
+3. If you need real-time data, you have three options:
    a) Use search_web for simple web searches (e.g., "what was the Dodgers 
       score last night")
    b) Use generate_research_report for detailed queries requiring comprehensive 
@@ -77,17 +85,24 @@ INSTRUCTIONS
       from (e.g., comparing prices from multiple product pages, extracting data 
       from reports, analyzing documentation)
 
-5. Native charts ARE supported with the create_chart tool. If the user asks for
+4. Native charts ARE supported with the create_chart tool. If the user asks for
    charts, dashboards, or visual summaries, use create_chart instead of saying
    charts are unsupported. Only fall back to chart-ready data if a chart tool
    call actually fails.
+
+5. For external SQL databases, use the data source tools:
+   a) list_data_sources to see available named connections
+   b) discover_data_source to find tables/views
+   c) inspect_data_source_relations to inspect columns before writing SQL
+   d) query_data_source to run read-only SQL and optionally write the results
+      directly into the workbook as a formatted table
 
 ================================================================================
 EXECUTE_CODE POLICY
 ================================================================================
 
-Use execute_code for data ANALYSIS and TRANSFORMATION on already-queried data 
-(either from ERP queries or web searches):
+Use execute_code only for data ANALYSIS and TRANSFORMATION on data that has
+already been gathered:
 - Statistical analysis (correlations, regressions, distributions)
 - Complex pivot tables with multiple aggregations
 - Data cleaning with complex conditional logic
@@ -99,12 +114,11 @@ Do NOT use execute_code for:
 - Simple sums, counts, or averages (use formulas)
 - Basic filtering or sorting (use Excel features)
 - Single-column calculations (use apply_formula)
-- Fetching data from ERP or Ramp tables (use query_data)
+- Fetching data from SQL sources (use query_data_source)
 
 The sandbox has df_sheets (Dict[str, pd.DataFrame] of all sheets), pd, np, 
 datetime, timedelta pre-imported.
-Variables stored by query_data (via df_name) are also available. State persists 
-between executions.
+State persists between executions.
 
 **Writing DataFrames to the workbook:**
 Use \`write_df_to_sheet(df_name, sheet_name)\` to write any DataFrame variable 
@@ -113,8 +127,7 @@ to the workbook.
 **IMPORTANT - Large data sets:**
 When you have a DataFrame with more than a few rows of data, ALWAYS use 
 \`write_df_to_sheet\` to write it to the workbook. Do NOT manually insert large 
-amounts of data using write_data_to_excel or apply_formula row by row - this 
-is slow and error-prone.
+amounts of data cell by cell.
 
 ================================================================================
 WORKING INCREMENTALLY
@@ -127,8 +140,8 @@ WORKING INCREMENTALLY
 2. Work in small parts: insert data or formulas in chunks, then verify each 
    chunk before moving on.
 
-3. After each significant edit, use read_ranges to check your work is correct 
-   before continuing.
+3. After each significant edit, use read_ranges, get_workbook_metadata, or
+   grep to check your work before continuing.
 
 4. When fixing errors or making corrections, use PRECISION EDITS:
    - Identify the specific cells that need to change
@@ -142,11 +155,11 @@ WORKING INCREMENTALLY
 SHEET MANAGEMENT
 ================================================================================
 
-1. Before creating a new sheet, use get_workbook_metadata to check existing 
+1. Before creating a new sheet, use get_workbook_metadata to check existing
    sheets.
 
 2. If "Sheet1" or any default sheet is empty, RENAME it to your desired name 
-   using rename_worksheet instead of creating a new sheet. This avoids leaving 
+   using rename_worksheet instead of creating a new sheet. This avoids leaving
    empty sheets in the workbook.
 
 3. Only use create_worksheet when all existing sheets have data.
@@ -160,11 +173,11 @@ BULK OPERATIONS
 When performing bulk operations (e.g., deleting many rows that match a 
 condition), avoid applying the operation one row at a time. Instead:
 
-1. Use sort_range to group matching rows together by sorting on the relevant 
+1. Use sort_range to group matching rows together by sorting on the relevant
    column
-2. Use your grep or read_ranges tool to find the contiguous range of rows that 
+2. Use grep or read_ranges to find the contiguous range of rows that
    match the condition
-3. Then apply the operation once on the contiguous range (e.g., a single 
+3. Then apply the operation once on the contiguous range (e.g., a single
    delete_range call)
 
 This is much more efficient and prevents performance issues.
@@ -181,10 +194,9 @@ EXCEL FORMULAS
    (e.g. A:A). Instead, you MUST specify the range of cells you want to 
    reference explicitly, e.g. A1:A100
 
-3. If you need to apply a formula to many cells, use the apply_formula tool to 
-   apply it to the first cell, then use the drag_formula tool to drag it to 
-   the rest of the range. This is much more efficient than calling apply_formula 
-   multiple times.
+3. If you need to apply a formula to many cells, use apply_formula to apply it
+   to the first cell, then use drag_formula to drag it to the rest of the
+   range. This is much more efficient than writing formulas one cell at a time.
 
 4. Avoid hardcoding values directly in formulas whenever possible. Instead, 
    place constants, rates, dates, and other fixed values in dedicated labeled 
@@ -259,25 +271,25 @@ When building a financial model, you MUST format in this order:
 FIXING MISALIGNED DATA
 ================================================================================
 
-When reviewing your work, if you find data is in the wrong position (e.g., off 
-by one row or column), use \`delete_range\` with \`shift_direction\` or 
-\`copy_range\` to fix alignment efficiently rather than rewriting all the data.
+When reviewing your work, if you find data is in the wrong position (e.g., off
+by one row or column), use delete_range and copy_range to fix alignment
+efficiently rather than rewriting all the data.
 
 Tools Available:
-- delete_range with shift_direction="up" or shift_direction="left" - removes 
+- delete_range with shift_direction="up" or shift_direction="left" removes
   cells and shifts others into place
-- copy_range - copies a range to a new location (useful for moving data blocks)
+- copy_range copies a range to a new location (useful for moving data blocks)
 
 Common Scenarios:
 1. Extra blank row inserted - Data is shifted down by one row
    Use delete_range on the blank row with shift_direction="up" to move data up
 
 2. Data starts one column too far right - Everything is offset
-   Use delete_range on the empty column with shift_direction="left" to shift 
+   Use delete_range on the empty column with shift_direction="left" to shift
    data left
 
 3. Data needs to move to a different location
-   Use copy_range to copy the data block to the correct location, then clear 
+   Use copy_range to copy the data block to the correct location, then clear
    the original
 
 ================================================================================
@@ -287,23 +299,23 @@ TASKS
 Before you work in the spreadsheet, you'll need to create tasks and check them 
 off as you go. Instructions are as follows:
 
-1. Before you start working on a spreadsheet, add all tasks you think you'll 
-   need to complete the task at hand using the add_tasks tool and delete any 
-   finished tasks using the delete_tasks tool.
+1. Before you start working on a spreadsheet, add all tasks you think you'll
+   need using the add_tasks tool and delete any finished tasks using the
+   delete_tasks tool.
 
-2. Focus on one task at a time. As you complete a task, you MUST check it off 
-   using the complete_task tool. Do NOT move on to other tasks until you have 
+2. Focus on one task at a time. As you complete a task, you MUST check it off
+   using the complete_task tool. Do NOT move on to other tasks until you have
    completed the current task and checked it off.
 
 3. Complete all tasks before you finish your work in the spreadsheet.
 
-4. If you realzie your task list is not correct make changes to it using the 
-   add_tasks and delete_tasks tool.
+4. If you realize your task list is not correct, make changes to it using the
+   add_tasks and delete_tasks tools.
 
-5. ALWAYS add a final "Review work" task. Before completing it, use read_ranges 
-   to scan your output area and verify: (a) there are no errors (e.g. #DIV/0!, 
-   #REF!, #VALUE!), (b) data is in the correct location, and (c) values look 
-   reasonable.
+5. ALWAYS add a final "Review work" task. Before completing it, use
+   read_ranges, get_workbook_metadata, or grep to scan your output area
+   and verify: (a) there are no errors (e.g. #DIV/0!, #REF!, #VALUE!), (b)
+   data is in the correct location, and (c) values look reasonable.
 
 NOTES:
 - If the user asks a regular question that does not require work, do not use 
@@ -1235,6 +1247,162 @@ const createPivotTable = createTool({
 });
 
 // ═══════════════════════════════════════════════════════
+// SQL Data Source Tools (4)
+// ═══════════════════════════════════════════════════════
+
+const listDataSources = createTool({
+  description:
+    "List all workbook data sources that the agent can query with SQL.",
+  args: z.object({}),
+  handler: async (ctx) => {
+    const sources = await ctx.runQuery(internal.dataSources.internalListForWorkbook, {
+      workbookId: wbId(ctx),
+    });
+
+    return {
+      count: sources.length,
+      sources: sources.map((source) => ({
+        id: source._id,
+        name: source.name,
+        dialect: source.dialect,
+      })),
+    };
+  },
+});
+
+const discoverDataSource = createTool({
+  description:
+    "Discover tables and views in a configured SQL data source. Use this before writing SQL.",
+  args: z.object({
+    data_source_id: z
+      .string()
+      .optional()
+      .describe("Optional data source id. Defaults to the first configured source."),
+    schema: z.string().optional(),
+    name_pattern: z
+      .string()
+      .optional()
+      .describe("SQL LIKE-style filter such as %sales%"),
+    limit: z.number().default(50),
+  }),
+  handler: async (ctx, args) => {
+    const source = await resolveDataSource(ctx, args.data_source_id);
+    const relations = await discoverDatabaseObjects(source, {
+      schema: args.schema,
+      namePattern: args.name_pattern,
+      limit: args.limit,
+    });
+
+    return {
+      dataSource: {
+        id: source._id,
+        name: source.name,
+        dialect: source.dialect,
+      },
+      relations,
+    };
+  },
+});
+
+const inspectDataSourceRelations = createTool({
+  description:
+    "Inspect one or more tables or views from a SQL data source and return their columns.",
+  args: z.object({
+    data_source_id: z
+      .string()
+      .optional()
+      .describe("Optional data source id. Defaults to the first configured source."),
+    names: z.array(z.string()).min(1),
+    schema: z.string().optional(),
+  }),
+  handler: async (ctx, args) => {
+    const source = await resolveDataSource(ctx, args.data_source_id);
+    const relations = await inspectRelations(source, args.names, args.schema);
+
+    return {
+      dataSource: {
+        id: source._id,
+        name: source.name,
+        dialect: source.dialect,
+      },
+      relations,
+    };
+  },
+});
+
+const queryDataSource = createTool({
+  description:
+    "Run a read-only SQL query against a configured data source. Can preview results, write them into the workbook, or both.",
+  args: z.object({
+    data_source_id: z
+      .string()
+      .optional()
+      .describe("Optional data source id. Defaults to the first configured source."),
+    sql_query: z.string().describe("Read-only SQL query"),
+    max_rows: z.number().default(200),
+    output_mode: z.enum(["preview", "sheet", "both"]).default("both"),
+    sheet_name: z.string().optional(),
+    start_cell: z.string().default("A1"),
+    explanation: z.string(),
+  }),
+  handler: async (ctx, args) => {
+    const source = await resolveDataSource(ctx, args.data_source_id);
+    assertReadOnlySql(args.sql_query);
+
+    const result = await runSqlQuery(source, args.sql_query);
+    const limitedRows = result.rows
+      .slice(0, Math.max(1, Math.min(1000, args.max_rows)))
+      .map((row) =>
+        Object.fromEntries(
+          Object.entries(row).map(([key, value]) => [
+            key,
+            toSheetCellValue(value),
+          ]),
+        ),
+      );
+    const sheetName = args.sheet_name?.trim() || `${source.name} Results`;
+
+    if (args.output_mode !== "preview") {
+      await ctx.runMutation(api.operations.create, {
+        workbookId: wbId(ctx),
+        threadId: ctx.threadId ?? "",
+        type: "write_query_results",
+        params: JSON.stringify({
+          sheet_name: sheetName,
+          start_cell: args.start_cell,
+          columns: result.columns,
+          rows: limitedRows,
+          source_name: source.name,
+          sql_query: args.sql_query,
+        }),
+        explanation: args.explanation,
+      });
+    }
+
+    return {
+      dataSource: {
+        id: source._id,
+        name: source.name,
+        dialect: source.dialect,
+      },
+      rowCount: limitedRows.length,
+      columns: result.columns,
+      rows:
+        args.output_mode === "sheet"
+          ? limitedRows.slice(0, 10)
+          : limitedRows,
+      writtenToSheet:
+        args.output_mode === "preview"
+          ? null
+          : {
+              sheet: sheetName,
+              startCell: args.start_cell,
+            },
+    };
+  },
+});
+
+// ═══════════════════════════════════════════════════════
 // Web & Research Tools (3)
 // ═══════════════════════════════════════════════════════
 
@@ -1303,7 +1471,7 @@ const browseUrl = createTool({
 });
 
 // ═══════════════════════════════════════════════════════
-// Code Execution (1)
+// Code Execution (2)
 // ═══════════════════════════════════════════════════════
 
 const executeCode = createTool({
@@ -1348,72 +1516,6 @@ const executeCode = createTool({
 });
 
 // ═══════════════════════════════════════════════════════
-// Finance (1)
-// ═══════════════════════════════════════════════════════
-
-const getStockPrice = createTool({
-  description: "Fetch the latest stock price information for a given ticker.",
-  args: z.object({
-    symbol: z.string().describe("Stock ticker symbol like AAPL, TSLA"),
-  }),
-  handler: async (_ctx, args) => {
-    try {
-      const { Sandbox } = await import("@e2b/code-interpreter");
-      const sbx = await Sandbox.create({
-        apiKey: process.env.E2B_API_KEY,
-        timeoutMs: 30_000,
-      });
-
-      try {
-        const code = `
-import yfinance as yf
-import json
-ticker = yf.Ticker("${args.symbol.replace(/"/g, "")}")
-info = ticker.info
-result = {
-    "symbol": "${args.symbol.replace(/"/g, "")}",
-    "price": info.get("currentPrice") or info.get("regularMarketPrice"),
-    "previousClose": info.get("previousClose"),
-    "open": info.get("open"),
-    "dayHigh": info.get("dayHigh"),
-    "dayLow": info.get("dayLow"),
-    "volume": info.get("volume"),
-    "marketCap": info.get("marketCap"),
-    "name": info.get("shortName"),
-}
-print(json.dumps(result))
-`;
-        const execution = await sbx.runCode(code);
-        if (execution.error) {
-          return { error: execution.error.value };
-        }
-        const stdout = execution.logs.stdout.join("");
-        return JSON.parse(stdout) as Record<string, string | number | null>;
-      } finally {
-        await sbx.kill();
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Stock price fetch failed";
-      return { error: msg };
-    }
-  },
-});
-
-// ═══════════════════════════════════════════════════════
-// Utility (1)
-// ═══════════════════════════════════════════════════════
-
-const echoTool = createTool({
-  description: "Return a message.",
-  args: z.object({
-    message: z.string(),
-  }),
-  handler: async (_ctx, args) => {
-    return { message: args.message };
-  },
-});
-
-// ═══════════════════════════════════════════════════════
 // Helper types & functions
 // ═══════════════════════════════════════════════════════
 
@@ -1451,6 +1553,13 @@ interface WorkbookSnapshot {
   name?: string;
   sheets: SheetData[];
 }
+
+type ResolvedDataSource = {
+  _id: Id<"dataSources">;
+  name: string;
+  dialect: SupportedSqlDialect;
+  connectionString: string;
+};
 
 function findSheet(
   snapshot: WorkbookSnapshot,
@@ -1676,6 +1785,47 @@ function colToLetter(col: number): string {
   return letter;
 }
 
+async function resolveDataSource(
+  ctx: ToolCtx<DataModel>,
+  dataSourceId?: string,
+): Promise<ResolvedDataSource> {
+  const sources = await ctx.runQuery(internal.dataSources.internalListForWorkbook, {
+    workbookId: wbId(ctx),
+  });
+
+  if (sources.length === 0) {
+    throw new Error("No data sources are configured for this workbook.");
+  }
+
+  const source = dataSourceId
+    ? sources.find((item) => item._id === dataSourceId)
+    : sources[0];
+
+  if (!source) {
+    throw new Error(`Data source '${dataSourceId}' was not found.`);
+  }
+
+  return {
+    _id: source._id,
+    name: source.name,
+    dialect: source.dialect as SupportedSqlDialect,
+    connectionString: source.connectionString,
+  };
+}
+
+function toSheetCellValue(value: unknown): string | number | boolean | null {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+
+  return JSON.stringify(value);
+}
+
 // ═══════════════════════════════════════════════════════
 // Agent definition
 // ═══════════════════════════════════════════════════════
@@ -1689,16 +1839,16 @@ export const sheetsAgent: Agent<{ workbookId: Id<"workbooks"> }> = new Agent<{
   workbookId: Id<"workbooks">;
 }>(components.agent, {
   name: "Zapsight Sheets Agent",
-  languageModel: openrouter.chat("openai/gpt-5.4"),
+  languageModel: openrouter.chat("anthropic/claude-sonnet-4.6"),
   instructions: SYSTEM_PROMPT,
   tools: {
-    // Task Management (4)
+    // Task management
     read_tasks: readTasks,
     add_tasks: addTasks,
     complete_task: completeTask,
     delete_tasks: deleteTasks,
 
-    // Spreadsheet Reading (7)
+    // Workbook inspection
     read_ranges: readRanges,
     get_workbook_metadata: getWorkbookMetadata,
     get_data_validation_info: getDataValidationInfo,
@@ -1707,24 +1857,18 @@ export const sheetsAgent: Agent<{ workbookId: Id<"workbooks"> }> = new Agent<{
     validate_formula_syntax: validateFormulaSyntax,
     grep: grepTool,
 
-    // Spreadsheet Writing (2)
+    // Workbook editing
     write_data_to_excel: writeDataToExcel,
     write_df_to_sheet: writeDfToSheet,
-
-    // Formatting (3)
     format_range: formatRange,
     conditional_format_range: conditionalFormatRange,
     format_worksheet: formatWorksheet,
-
-    // Sheet Management (6)
     rename_worksheet: renameWorksheet,
     create_worksheet: createWorksheet,
     delete_worksheet: deleteWorksheet,
     copy_worksheet: copyWorksheet,
     create_table: createTable,
     create_chart: createChart,
-
-    // Cell Operations (9)
     apply_formula: applyFormula,
     drag_formula: dragFormula,
     copy_range: copyRange,
@@ -1734,9 +1878,13 @@ export const sheetsAgent: Agent<{ workbookId: Id<"workbooks"> }> = new Agent<{
     unmerge_cells: unmergeCells,
     set_cell_dropdown: setCellDropdown,
     sort_range: sortRange,
-
-    // Data Operations (1)
     create_pivot_table: createPivotTable,
+
+    // SQL data sources
+    list_data_sources: listDataSources,
+    discover_data_source: discoverDataSource,
+    inspect_data_source_relations: inspectDataSourceRelations,
+    query_data_source: queryDataSource,
 
     // Web & Research (3)
     search_web: searchWeb,
@@ -1746,11 +1894,6 @@ export const sheetsAgent: Agent<{ workbookId: Id<"workbooks"> }> = new Agent<{
     // Code Execution (1)
     execute_code: executeCode,
 
-    // Finance (1)
-    get_stock_price: getStockPrice,
-
-    // Utility (1)
-    echo: echoTool,
   },
   maxSteps: 50,
 });

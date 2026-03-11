@@ -33,22 +33,24 @@ export function ChatPanel({
   onSendMessage,
   isSending,
 }: ChatPanelProps) {
-  const { results, status } = useUIMessages(
+  const { results, status, loadMore } = useUIMessages(
     api.chat.listMessages,
     threadId ? { threadId } : "skip",
     { initialNumItems: 50, stream: true }
   );
 
   const isLoadingFirst = status === "LoadingFirstPage";
+  const isLoadingMore = status === "LoadingMore";
+  const canLoadMore = status === "CanLoadMore" || isLoadingMore;
 
   const hasMessages = results && results.length > 0;
 
   return (
     <TooltipProvider>
-      <div className="flex h-full min-h-0 w-full flex-col bg-[#fbfaf8]">
+      <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-[#fbfaf8]">
         <TaskList workbookId={workbookId} />
 
-        <Conversation className="min-h-0 flex-1 overflow-hidden">
+        <Conversation className="min-h-0 flex-1 basis-0 overflow-hidden">
           {!hasMessages ? (
             <ConversationEmptyState
               className="items-start px-4 py-4 text-left"
@@ -68,7 +70,7 @@ export function ChatPanel({
                       key={prompt}
                       onClick={() => onSendMessage(prompt)}
                       disabled={isSending}
-                      className="rounded-[12px] border border-[var(--chat-border)] bg-white px-3 py-2.5 text-left text-[13px] text-[var(--ink)] transition hover:bg-[var(--chat-soft)] disabled:opacity-50"
+                      className="rounded-[12px] border border-[var(--chat-border)] bg-white px-3 py-2.5 text-left text-sm text-[var(--ink)] transition hover:bg-[var(--chat-soft)] disabled:opacity-50"
                     >
                       {prompt}
                     </button>
@@ -77,7 +79,22 @@ export function ChatPanel({
               </div>
             </ConversationEmptyState>
           ) : (
-            <ConversationContent className="gap-4 px-4 py-4">
+            <ConversationContent
+              className="min-h-0 gap-4 px-4 py-4"
+              scrollClassName="min-h-0 overscroll-contain"
+            >
+              {canLoadMore && (
+                <div className="flex justify-center pb-2">
+                  <button
+                    type="button"
+                    onClick={() => loadMore(50)}
+                    disabled={isLoadingMore}
+                    className="rounded-full border border-[var(--chat-border)] bg-white px-3 py-1.5 text-[12px] font-medium text-[var(--umber)] transition hover:bg-[var(--chat-soft)] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isLoadingMore ? "Loading older messages..." : "Load older messages"}
+                  </button>
+                </div>
+              )}
               {results.map((msg) => {
                 const textContent = msg.text;
                 const reasoningParts = msg.parts
@@ -109,7 +126,7 @@ export function ChatPanel({
                 );
               })}
               {isLoadingFirst && (
-                <div className="animate-pulse text-[13px] text-[var(--umber)]">
+                <div className="animate-pulse text-sm text-[var(--umber)]">
                   Loading messages...
                 </div>
               )}

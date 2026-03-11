@@ -6,7 +6,10 @@ import type { Id } from "../../convex/_generated/dataModel";
 /**
  * Manages chat thread creation and message sending.
  */
-export function useChat(workbookId: Id<"workbooks"> | null) {
+export function useChat(
+  workbookId: Id<"workbooks"> | null,
+  preferredThreadId?: string | null
+) {
   const [threadId, setThreadId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const existingThreadId = useQuery(
@@ -22,6 +25,13 @@ export function useChat(workbookId: Id<"workbooks"> | null) {
     if (!existingThreadId) return;
     setThreadId((current) => current ?? existingThreadId);
   }, [existingThreadId]);
+
+  useEffect(() => {
+    if (!preferredThreadId) return;
+    setThreadId((current) =>
+      current === preferredThreadId ? current : preferredThreadId
+    );
+  }, [preferredThreadId]);
 
   const ensureThread = useCallback(async () => {
     if (threadId) return threadId;

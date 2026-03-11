@@ -26,7 +26,7 @@ export function TaskList({ workbookId }: TaskListProps) {
   if (!tasks || tasks.length === 0) return null;
 
   return (
-    <div className="border-b border-[var(--linen)] px-4 py-2.5">
+    <div className="shrink-0 border-b border-[var(--linen)] px-4 py-2.5">
       <Queue className="gap-0 rounded-none border-0 bg-transparent px-0 py-0 shadow-none">
         <QueueSection defaultOpen>
           <QueueSectionTrigger className="rounded-none bg-transparent px-0 py-0 font-semibold text-[11px] uppercase tracking-[0.18em] text-[var(--umber)] hover:bg-transparent">
@@ -43,7 +43,7 @@ export function TaskList({ workbookId }: TaskListProps) {
                     <QueueItemIndicator completed={task.status === "completed"} />
                     <QueueItemContent
                       completed={task.status === "completed"}
-                      className="line-clamp-none text-[13px] leading-5 text-[var(--graphite)]"
+                      className="line-clamp-none text-sm leading-5 text-[var(--graphite)]"
                     >
                       {i + 1}. {task.content}
                     </QueueItemContent>
